@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: nova-api
+    runtime: docker
+    rootDir: backend
+    plan: starter
+    healthCheckPath: /healthz
+    disk:
+      name: nova-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ACCESS_CODE
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: LLM_PROVIDER
+        value: compatible
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: CHAT_MODEL
+        sync: false
+      - key: REASONING_MODEL
+        sync: false
+      - key: DATABASE_PATH
+        value: /data/nova.db
+      - key: GLOBAL_REQUESTS_PER_MINUTE
+        value: '60'
