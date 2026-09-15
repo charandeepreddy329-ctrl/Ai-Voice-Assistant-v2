@@ -90,3 +90,38 @@ def test_original_website_shortcuts():
 
 def test_malformed_content_length():
     assert client.post('/api/session',headers={'Content-Length':'bad'},content='{}').status_code==400
+
+
+@pytest.mark.parametrize('timezone', ['', '/etc/passwd', '../UTC', 'bad/zone'])
+def test_invalid_timezone_returns_validation_error(timezone):
+    response = client.post('/api/chat', headers=session(), json={'text':'hello', 'timezone':timezone})
+    assert response.status_code == 422
+    assert response.json()['detail'] == 'Unknown timezone.'
+
+
+def test_timezone_data_without_system_database():
+    """A fresh process prevents host timezone files or cached ZoneInfo hiding missing tzdata."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    script = """
+import os
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, TZPATH
+from fastapi.testclient import TestClient
+from app.main import app
+from app.llm import OllamaLLM
+assert TZPATH == (), TZPATH
+OllamaLLM.generate_python = lambda self, request: 'print("hello")\\n'
+client = TestClient(app)
+token = client.post('/api/session', json={'access_code':os.environ['ACCESS_CODE']}).json()['token']
+headers = {'Authorization':'Bearer '+token}
+for name, hours in [('UTC',0), ('Asia/Kolkata',5.5), ('Asia/Calcutta',5.5)]:
+    assert datetime(2026,9,15,tzinfo=ZoneInfo(name)).utcoffset() == timedelta(hours=hours)
+    response = client.post('/api/chat', headers=headers, json={'text':'Create a Python file for a command-line to-do list.', 'timezone':name})
+    assert response.status_code == 200, response.text
+    assert response.json()['action']['type'] == 'download', response.text
+"""
+    result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).resolve().parents[1],
+                            env={**os.environ, 'PYTHONTZPATH':''}, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
