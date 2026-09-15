@@ -96,7 +96,7 @@ def chat(body: Message, session: str = Depends(identity)):
     if not capacity.acquire(blocking=False): raise HTTPException(503,'Nova is busy. Please try again shortly.')
     try:
         try: timezone = ZoneInfo(body.timezone)
-        except ZoneInfoNotFoundError: raise HTTPException(422,'Unknown timezone.')
+        except (ZoneInfoNotFoundError, ValueError): raise HTTPException(422,'Unknown timezone.')
         storage = LocalStorage(DB, session)
         llm = OllamaLLM(storage)
         actions = DesktopActions(llm)
