@@ -1,25 +1,39 @@
 import os
-import tempfile
-os.environ['SESSION_SECRET']='test-session-secret-with-more-than-32-characters'
-os.environ['ACCESS_CODE']='test-access-code-only'
-os.environ['DATABASE_PATH']=tempfile.mktemp(suffix='.db')
+from uuid import uuid4
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 from app.main import app, limits
 from app.llm import OllamaLLM
-import pytest
+from app.storage import LocalStorage
+
+client = TestClient(app)
+accounts = {}
+real_client = httpx.Client
 
 @pytest.fixture(autouse=True)
-def reset_limits(): limits.clear()
-client=TestClient(app)
-def session():
-    r=client.post('/api/session',json={'access_code':'test-access-code-only'})
-    assert r.status_code==200
-    return {'Authorization':'Bearer '+r.json()['token']}
+def account_services(monkeypatch, tmp_path):
+    limits.clear()
+    accounts.clear()
+    monkeypatch.setenv('SUPABASE_URL', 'https://accounts.example')
+    monkeypatch.setenv('SUPABASE_PUBLISHABLE_KEY', 'test-public-key')
+    def auth_server(request):
+        token = request.headers.get('authorization', '').removeprefix('Bearer ')
+        if token not in accounts:
+            return httpx.Response(401, json={'message':'expired or invalid'})
+        return httpx.Response(200, json={'id':accounts[token], 'email_confirmed_at':'2026-09-22T00:00:00Z'})
+    monkeypatch.setattr(httpx, 'Client', lambda **kw: real_client(transport=httpx.MockTransport(auth_server), **kw))
+    monkeypatch.setattr('app.main.AccountStorage', lambda account: LocalStorage(str(tmp_path/'data.db'), account.id))
+
+def session(user_id=None):
+    token = str(uuid4())
+    accounts[token] = user_id or str(uuid4())
+    return {'Authorization':'Bearer '+token}
 def ask(headers,text): return client.post('/api/chat',headers=headers,json={'text':text}).json()
 
 def test_auth_and_limits():
     assert client.post('/api/chat',json={'text':'hello'}).status_code in (401,403)
-    assert client.post('/api/session',json={'access_code':'wrong'}).status_code==403
+    assert client.post('/api/session',json={'access_code':'old-code'}).status_code==404
     assert client.post('/api/chat',headers={'Authorization':'Bearer forged'},json={'text':'hi'}).status_code==401
     h=session()
     for _ in range(15): assert client.post('/api/chat',headers=h,json={'text':'hi'}).status_code==200
@@ -68,11 +82,48 @@ def test_calculator_rejects_code():
         with pytest.raises(UnsafeExpressionError): safe_calculate(expression)
 
 
-def test_expired_token(monkeypatch):
-    import itsdangerous.timed
+def test_expired_token():
     h=session()
-    monkeypatch.setattr(itsdangerous.timed.TimestampSigner, 'get_timestamp', lambda self: 9999999999)
+    accounts.clear()
     assert client.post('/api/chat',headers=h,json={'text':'hello'}).status_code==401
+
+
+def test_account_history_survives_new_token_and_is_private():
+    user_id = str(uuid4())
+    first = session(user_id)
+    ask(first, 'remember that my favorite color is green')
+    second = session(user_id)
+    stranger = session()
+    history = client.get('/api/history', headers=second).json()['messages']
+    assert history[0]['text'] == 'remember that my favorite color is green'
+    assert len(history) == 2
+    assert client.get('/api/history', headers=stranger).json() == {'messages':[]}
+    assert 'green' in ask(second,'show memory')['text']
+    client.delete('/api/data', headers=stranger)
+    assert client.get('/api/history', headers=second).json()['messages']
+    client.delete('/api/data', headers=second)
+    assert client.get('/api/history', headers=first).json() == {'messages':[]}
+
+
+def test_every_private_endpoint_requires_identity():
+    for path in ['/api/history', '/api/model-status']:
+        assert client.get(path).status_code == 401
+        assert client.get(path, headers={'Authorization':'Bearer forged'}).status_code == 401
+    assert client.delete('/api/data').status_code == 401
+
+
+def test_model_status_reports_configuration_not_connectivity(monkeypatch):
+    for name in ['LLM_PROVIDER', 'LLM_API_KEY', 'LLM_BASE_URL', 'CHAT_MODEL']:
+        monkeypatch.delenv(name, raising=False)
+    result=client.get('/api/model-status', headers=session()).json()
+    assert result['status']=='unconfigured'
+    monkeypatch.setenv('LLM_API_KEY','secret-do-not-expose')
+    monkeypatch.setenv('LLM_BASE_URL','https://model.example/v1')
+    monkeypatch.setenv('CHAT_MODEL','test-model')
+    result=client.get('/api/model-status', headers=session()).json()
+    assert result['status']=='configured'
+    assert 'secret-do-not-expose' not in str(result)
+    assert 'check the connection' in result['message']
 
 
 def test_invalid_generated_python(monkeypatch):
@@ -110,12 +161,18 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, TZPATH
 from fastapi.testclient import TestClient
 from app.main import app
+from app.auth import Account, identity
+from app.storage import LocalStorage
+import app.main as main
+import tempfile
+main.AccountStorage = lambda account: LocalStorage(db, account.id)
+db = tempfile.mktemp(suffix='.db')
+app.dependency_overrides[identity] = lambda: Account('test-user', 'test-token')
 from app.llm import OllamaLLM
 assert TZPATH == (), TZPATH
 OllamaLLM.generate_python = lambda self, request: 'print("hello")\\n'
 client = TestClient(app)
-token = client.post('/api/session', json={'access_code':os.environ['ACCESS_CODE']}).json()['token']
-headers = {'Authorization':'Bearer '+token}
+headers = {'Authorization':'Bearer test-token'}
 for name, hours in [('UTC',0), ('Asia/Kolkata',5.5), ('Asia/Calcutta',5.5)]:
     assert datetime(2026,9,15,tzinfo=ZoneInfo(name)).utcoffset() == timedelta(hours=hours)
     response = client.post('/api/chat', headers=headers, json={'text':'Create a Python file for a command-line to-do list.', 'timezone':name})
