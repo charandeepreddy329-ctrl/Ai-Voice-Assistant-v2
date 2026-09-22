@@ -1,45 +1,29 @@
-# Authentication and credential handling
+# Email accounts and data ownership
 
-## Original desktop application
+The web app uses Supabase email magic links. The original desktop assistant is unchanged.
 
-The original project has no user login, passwords, OAuth, JWTs, or session tokens. `desktop/nova_assistant/config.py:Settings.load` reads model names, Ollama host, data directory and speech options from environment variables (optionally loaded by python-dotenv without overriding existing environment values). `desktop/nova_assistant/llm.py:OllamaLLM._get_client` constructs an Ollama client with a host and no explicit API credential. Its default is the local loopback service at port 11434. Local OS access is the effective trust boundary.
+1. The browser calls `signInWithOtp` with an email address and the application's own origin as the return URL. Supabase sends a one-use sign-in link. The address must be verified; typing an email alone does not grant access.
+2. The Supabase browser SDK receives and refreshes the session. API requests use its current access token. Old `nova-token` browser sessions and `/api/session` access codes are no longer accepted.
+3. FastAPI asks the configured Supabase Auth server to validate each token. Only its returned UUID determines the account. Anonymous and unverified accounts are rejected. The client cannot choose another user's identity.
+4. Records live in Supabase Postgres. Reads and deletes include the verified user ID; all requests also carry that user's JWT. Row-level policies independently enforce `auth.uid() = user_id` for reads, inserts and deletes. No service-role key is used.
+5. Notes, memories, model context and visible conversation history survive new login sessions and API restarts. Each collection retains its newest 100 records. Model context uses the last 10 chat entries and last 5 memories. Generated code downloads in history remain private to the account.
+6. Signing out clears visible content and the local SDK session. It leaves stored data intact. “Delete my saved data” deletes the signed-in account's records, not its Supabase account. A previously issued access JWT can remain valid until expiry; sign-out is not a promise of immediate token revocation.
 
-`runtime.py:build_runtime` wires Settings → JSONL LocalStorage → OllamaLLM → DesktopActions → NovaAssistant and SpeechService. CLI/GUI commands enter `NovaAssistant.handle`, then route to arithmetic, storage, desktop actions or model inference. `speech.py:listen` uses Google recognition without an application-supplied key; this does not make voice transcription local. No original JSONL data is included in this repository.
+## Secrets
 
-## Web components
+- Supabase URL and **publishable** key (legacy `anon` key also supported) are public configuration. Both frontend and backend need them. NEVER use a `service_role` or Supabase secret key in the frontend or this adapter.
+- `LLM_API_KEY` belongs only in the backend environment. Requests go only to the operator-configured HTTPS URL, without following redirects.
+- `ACCESS_CODE`, `SESSION_SECRET`, and `DATABASE_PATH` are obsolete for the web backend.
+- SDK tokens reside in browser storage; scripts on the same origin can read them. React renders responses as escaped text; no generated HTML is executed. Use only trusted frontend scripts and HTTPS.
+- `ALLOWED_ORIGINS` contains exact frontend origins. CORS is not authentication.
+- The service owner can access the database. AI questions, recent model context and saved memories go to the configured model provider. Browser speech services may process microphone audio; the API only receives the reviewed transcript.
 
-| Component | Responsibility |
-|---|---|
-| `frontend/src/main.jsx:connect` | Sends the visitor-entered access code to POST /api/session over HTTPS |
-| `backend/app/main.py:login` | Rate-limits attempts, compares SHA-256 digests with constant-time compare, creates a new random identity |
-| `URLSafeTimedSerializer` | Signs that identity with SESSION_SECRET and salt nova-session-v1; includes issue time |
-| `frontend/src/main.jsx:request` | Reads the token from app state and sends Authorization: Bearer on requests |
-| `backend/app/main.py:identity` | Verifies signature and maximum age of 30 days before chat or deletion |
-| `backend/app/storage.py:LocalStorage` | Scopes every query, insert, and deletion to the verified identity |
-| `backend/app/llm.py:OllamaLLM._chat` | Sends the provider API key only to the server-configured HTTPS model endpoint |
+## Operational limits
 
-## Request flow
+Keep one API worker/instance while request limits are in memory. Limits reset on restart and do not replace provider spending caps. Supabase enforces email rate limits; configure production SMTP before opening signups to external users. Enable provider abuse controls and monitor usage before wider promotion.
 
-1. The public frontend loads without authentication. GET /healthz is public and checks API health only.
-2. Connect submits `{ "access_code": "visitor-entered value" }` to POST /api/session. ACCESS_CODE must be at least 12 characters, SESSION_SECRET at least 32; missing values fail startup.
-3. An incorrect code returns 403. Successful login creates a fresh random 24-byte URL-safe identity and signs it. The access code is removed from React state after success and is not deliberately persisted by the application.
-4. The browser saves the returned bearer token in localStorage under `nova-token`. This is a signed token, not a JWT or an encrypted payload. The payload holds a random identity, not model keys or user notes.
-5. POST /api/chat verifies the token; limits message length, rate and concurrent work; constructs storage scoped to the identity; routes the command. Local commands need no model key. AI requests include recent chat and saved memories in the provider request.
-6. The backend returns text and, where appropriate, an allowlisted HTTPS link or a syntax-checked Python download. Generated programs are never executed. The browser renders text with React escaping and uses optional browser speech synthesis.
-7. DELETE /api/data deletes only the verified session's records. Disconnect removes the browser token and visible chat, but does not revoke that token or delete stored data. Expired/invalid tokens return 401 and the frontend prompts for reconnection.
+Old anonymous browser records cannot safely be assigned to an email automatically. Back up any existing SQLite database before rollout, preserve it outside this migration, and export needed notes before switching. Never bulk-assign old records to newly created accounts.
 
-## Secrets and boundaries
+## Tests
 
-- `ACCESS_CODE`: shared workspace gate, backend environment only. Anyone who knows it can create an isolated session; this is not named-user account authentication.
-- `SESSION_SECRET`: backend signing secret. Rotation invalidates all existing tokens and makes their old records inaccessible through newly created sessions. Keep it stable during routine deployments.
-- `LLM_API_KEY`: backend environment only, used as a Bearer credential for LLM_PROVIDER=compatible. LLM_BASE_URL is controlled by the operator, never by visitor input. Redirects are not followed by the HTTPX client by default.
-- `VITE_API_URL`: public backend origin, not a secret. Never put secrets in VITE_* variables; Vite embeds them in downloadable JavaScript.
-- `ALLOWED_ORIGINS`: explicit frontend origins; CORS governs browsers and does not authenticate non-browser clients. Credentials are explicit Authorization headers, not automatically attached cookies.
-- Browser microphone access requires HTTPS/localhost and user permission. Speech recognition may send audio to the browser vendor. The Nova API receives the reviewed text, not raw microphone recordings.
-- LocalStorage tokens are readable by JavaScript on the frontend origin, so XSS could steal them. Avoid third-party scripts; for stronger account security migrate to OIDC and secure HttpOnly cookies with appropriate CSRF protection.
-- Tokens cannot currently be individually revoked; changing ACCESS_CODE blocks new logins with the old code but does not invalidate already-issued sessions. There is no password reset, MFA, account recovery, or cross-device identity.
-- In-process limits require one worker/instance, reset on restart, and are not a substitute for provider spending limits. SQLite needs a persistent disk for durable notes. The owner can access server data; it is not end-to-end encrypted.
-
-## Verification
-
-`backend/tests/test_api.py` covers missing and forged tokens, wrong access codes, token expiry, session isolation, deletion, CORS, message/body limits, throttling, and code-generation validation. Provider requests are mocked in tests; live model credentials must be configured and checked separately.
+Backend tests mock external Auth and model endpoints while checking verification, failures, user isolation, new sessions, history, deletion, limits and timezone behavior. Frontend tests cover sign-in states and account changes. Database tests execute the migration in a local PostgreSQL-compatible PGlite instance and check RLS, denied impersonation, deletion and retention. Real email delivery and real model replies remain deployment acceptance checks.
