@@ -10,7 +10,7 @@ Confirmed desktop dependencies: Python >=3.11; ollama >=0.6,<1 and python-dotenv
 
 ## Web architecture
 
-HTTPS browser (React/Vite) → HTTPS JSON API (FastAPI) → original command router → SQLite, safe calculator, structured browser actions, and model adapter.
+HTTPS browser (React/Vite) → HTTPS JSON API (FastAPI) → original command router → Supabase Postgres, safe calculator, structured browser actions, and model adapter.
 
 React Three Fiber renders a procedurally generated point-cloud orb; animation reflects listening, thinking, and speech state. It loads separately from the main bundle, respects reduced-motion preference, and falls back to a CSS orb on render failure.
 
@@ -20,7 +20,7 @@ The original assistant.py, calculator.py and models.py are adapted directly. Sto
 |---|---|
 | Chat and reasoning | Ollama for local development; HTTPS OpenAI-compatible chat endpoint for hosting |
 | Arithmetic | Original restricted AST calculator; no eval |
-| Notes and memories | SQLite, scoped to signed browser session; last 100 records per collection |
+| Notes and memories | Supabase Postgres, scoped to verified email account UUID with row-level security; last 100 records per collection |
 | Conversation context | Last 10 model messages and saved memories sent to model |
 | Google/YouTube search | Clickable encoded search URLs; not scraped results |
 | Approved sites | Seven explicit HTTPS destinations; no arbitrary server navigation |
@@ -37,6 +37,6 @@ Access code is entered by the visitor, never built into the frontend. The server
 
 Keys and signing secrets live only on the backend. Exact CORS origins control browser access; CORS is not authentication. Every chat/data route authenticates. Login and chat have in-process rate limits, chat has a global rate cap and four-request concurrency cap, and request bodies are bounded. Deploy one Uvicorn worker on one instance. Limits reset on restart and login IP limits may aggregate visitors behind the hosting proxy; global limits still apply. Configure provider-side spending limits as well.
 
-SQLite supports durable storage on one persistent disk. Up to 100 entries per collection are retained, but visitor identities have no global quota; plan storage monitoring and cleanup for broader exposure. Service owner has database access. User text, recent chat, and memories are transmitted to the configured model provider for AI answers. Speech processing may use the browser vendor's speech service. No raw microphone audio is uploaded to this API.
+Supabase provides storage independent of the API filesystem. Up to 100 entries per account and collection are retained. Verified accounts and row-level security separate users; monitor total storage and configure email abuse controls before broad exposure. Service owner has database access. User text, recent chat, and memories are transmitted to the configured model provider for AI answers. Speech processing may use the browser vendor's speech service. No raw microphone audio is uploaded to this API.
 
 Do not expose a local Ollama port publicly. A public Render container cannot use Ollama on your laptop through localhost. Use a hosted compatible provider, or deploy private secured model infrastructure separately.

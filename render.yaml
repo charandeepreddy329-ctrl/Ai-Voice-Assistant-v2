@@ -3,16 +3,12 @@ services:
     name: nova-api
     runtime: docker
     rootDir: backend
-    plan: starter
+    plan: free
     healthCheckPath: /healthz
-    disk:
-      name: nova-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
-      - key: SESSION_SECRET
-        generateValue: true
-      - key: ACCESS_CODE
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false
@@ -26,7 +22,5 @@ services:
         sync: false
       - key: REASONING_MODEL
         sync: false
-      - key: DATABASE_PATH
-        value: /data/nova.db
       - key: GLOBAL_REQUESTS_PER_MINUTE
         value: '60'
