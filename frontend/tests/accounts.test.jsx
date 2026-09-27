@@ -6,7 +6,7 @@ const mock = vi.hoisted(()=>({session:null, callback:null, signIn:vi.fn(), signO
 vi.mock('../src/auth',()=>({auth:{auth:{
  getSession:async()=>({data:{session:mock.session}}),
  onAuthStateChange:cb=>{mock.callback=cb;return {data:{subscription:{unsubscribe(){}}}}},
- signInWithOtp:(...args)=>mock.signIn(...args),
+ signInWithOAuth:(...args)=>mock.signIn(...args),
  signOut:(...args)=>mock.signOut(...args),
 }}}));
 vi.mock('../src/Orb',()=>({default:()=> <div>3D assistant</div>}));
@@ -27,23 +27,20 @@ beforeEach(()=>{
 });
 afterEach(()=>{cleanup();vi.unstubAllGlobals()});
 
-test('email form sends a magic link and does not expose an access-code field',async()=>{
+test('Google sign-in requests the provider with an exact same-origin return URL',async()=>{
  render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Sign in'}));
- fireEvent.change(screen.getByLabelText('Email address'),{target:{value:'reader@example.com'}});
- fireEvent.click(screen.getByRole('button',{name:'Email me a sign-in link'}));
- await screen.findByRole('status');
- expect(mock.signIn).toHaveBeenCalledWith({email:'reader@example.com',options:{emailRedirectTo:window.location.origin+'/'}});
+ fireEvent.click(screen.getByRole('button',{name:'Continue with Google'}));
+ await waitFor(()=>expect(mock.signIn).toHaveBeenCalledWith({provider:'google',options:{redirectTo:window.location.origin+'/'}}));
+ expect(screen.queryByLabelText('Email address')).toBeNull();
  expect(screen.queryByLabelText('Workspace access code')).toBeNull();
- expect(screen.getByRole('status').textContent).toContain('Check your email');
 });
 
-test('email delivery errors remain visible and allow retry',async()=>{
- mock.signIn.mockResolvedValue({error:{message:'Please wait before requesting another link.'}});
+test('Google provider errors remain visible and allow retry',async()=>{
+ mock.signIn.mockResolvedValue({error:{message:'Google sign-in is not enabled.'}});
  render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Sign in'}));
- fireEvent.change(screen.getByLabelText('Email address'),{target:{value:'reader@example.com'}});
- fireEvent.click(screen.getByRole('button',{name:'Email me a sign-in link'}));
- await waitFor(()=>expect(screen.getAllByRole('alert').some(x=>x.textContent.includes('Please wait'))).toBe(true));
- expect(screen.getByRole('button',{name:'Email me a sign-in link'}).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'Continue with Google'}));
+ await waitFor(()=>expect(screen.getAllByRole('alert').some(x=>x.textContent.includes('not enabled'))).toBe(true));
+ expect(screen.getByRole('button',{name:'Continue with Google'}).disabled).toBe(false);
 });
 
 test('restores history, refreshes request token, and clears private content on signout',async()=>{
